@@ -1,0 +1,16 @@
+(defproject orc-lambda "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "1.8.0"]
+                 [org.apache.orc/orc-core "1.3.3"]
+                 [org.apache.orc/orc-tools "1.3.3"]
+                 [amazonica "0.3.94"]
+                 [cheshire "5.7.0"]
+                 [uswitch/lambada "0.1.2"]
+                 [org.xerial.snappy/snappy-java "1.1.4-M3"]
+                 [clj-time "0.9.0"]
+                 [org.clojure/core.unify "0.5.7"]]
+  :profiles {:uberjar {:aot :all}
+             :dev {:resource-paths ["test-resources"]}})
