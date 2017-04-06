@@ -10,14 +10,3 @@
            [org.apache.hadoop.conf Configuration]
            [org.apache.hadoop.fs Path]
            [org.apache.hadoop.hive.serde2.io HiveDecimalWritable]))
-
-
-(defn to-path [x]
-  (cond
-    (instance? java.net.URL x) (Path. (.toURI x))
-    (instance? Path x)         x))
-
-(defn file-writer
-  "Creates an ORC writer for a given file or path."
-  [path]
-  (OrcFile/createWriter (to-path path) (OrcFile/writerOptions (Configuration.))))

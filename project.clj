@@ -11,6 +11,8 @@
                  [uswitch/lambada "0.1.2"]
                  [org.xerial.snappy/snappy-java "1.1.4-M3"]
                  [clj-time "0.9.0"]
-                 [org.clojure/core.unify "0.5.7"]]
+                 [org.clojure/core.unify "0.5.7"]
+                 [org.clojure/tools.trace "0.7.9"]
+                 [org.clojure/core.match "0.3.0-alpha4"]]
   :profiles {:uberjar {:aot :all}
              :dev {:resource-paths ["test-resources"]}})
