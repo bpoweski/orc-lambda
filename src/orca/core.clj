@@ -25,8 +25,8 @@
   (cond
     (instance? java.net.URL x) (Path. (.toURI ^java.net.URL x))
     (instance? java.io.File x) (Path. (.getPath ^java.io.File x))
-    (instance? Path x)         x
-    (string? x)                (Path. ^String x)))
+    (string? x)                (Path. ^String x)
+    (instance? Path x)         x))
 
 (defn ^Reader file-reader
   "Creates an ORC reader for a given file or path."
@@ -133,7 +133,7 @@
   (data-props [v] {:length 1})
 
   ;; date       LongColumnVector
-  java.util.Date
+  org.joda.time.LocalDate
   (data-type [v] ::date)
   (data-props [v])
 
@@ -172,12 +172,15 @@
 
   ;; map        MapColumnVector
   java.util.Map
-  (data-type [v] ::map)
+  (data-type [v] ::struct)
   (data-props [v])
 
   ;; struct     StructColumnVector
 
   ;; timestamp  TimestampColumnVector
+  org.joda.time.DateTime
+  (data-type [v] ::timestamp)
+  (data-props [v])
 
   ;; uniontype  UnionColumnVector
 
@@ -203,68 +206,6 @@
      :max   (apply max coll)
      :count nrows}))
 
-(defn infer [m val]
-  (let [inferred (data-type val)
-        existing (get-in m [:type-freq inferred] 0)]
-    (assoc-in m [:type-freq inferred] (inc existing))))
-
-(defn make-column-vector [v {:keys [type-freq] :as column-meta}]
-  (let [nils? (pos? (get type-freq ::nil 0))]
-    ))
-
-(defn vectorize
-  "Buffers values and then emits a ColumnnVector of the discovered type."
-  ([]
-   (fn [rf]
-     (let [a           (java.util.ArrayList.)
-           column-meta (volatile! {})
-           clear!      (fn []
-                         (.clear a)
-                         (vreset! column-meta {}))
-           track!      (fn [input]
-                         (vswap! column-meta infer input)
-                         (.add a input))]
-       (fn
-         ([] (rf))
-         ([result]
-          (let [col-meta @column-meta
-                result   (if (.isEmpty a)
-                           result
-                           (let [col-vec (make-column-vector (vec (.toArray a)) @column-meta)]
-                             ;;clear first!
-                             (clear!)
-                             (unreduced (rf result col-vec))))]
-            (pprint col-meta)
-            (rf result)))
-         ([result input]
-          (if (< (count a) 1024)
-            (track! input)
-            (let [col-vec (make-column-vector (vec (.toArray a)) @column-meta)]
-              (clear!)
-              (let [ret (rf result col-vec)]
-                (when-not (reduced? ret)
-                  (track! input))
-                ret))))))))
-  ([coll] (sequence (vectorize) coll)))
-
-(defn make-column-vector* [coll]
-  (let [v   (LongColumnVector.)
-        arr (long-array (count coll))
-        _   (set! (.vector v) arr)
-        _   (set! (.noNulls v) true)]
-    (doseq [[idx x] (map-indexed vector coll)]
-      (if (nil? x)
-        (do (set! (.noNulls v) false)
-            (aset-boolean (.isNull v) idx true))
-        (aset-long arr idx x)))
-    v))
-
-(defn encode-column [coll]
-  (let [x (first coll)]
-    (condp instance? x
-      Long   (make-column-vector* coll)
-      String (make-column-vector* coll))))
-
 (defn parse-file []
   (cheshire.core/parse-string (slurp (io/resource "search.json")) keyword))
 
@@ -285,6 +226,16 @@
     {}
     x)])
 
+(defmethod typedef ::struct [x]
+  [::struct
+   (reduce-kv
+    (fn [kmap k v]
+      (if-let [dt (data-type v)]
+        (assoc kmap k (typedef v))
+        kmap))
+    {}
+    x)])
+
 (defmethod typedef ::array [x]
   (let [child-types (set (map typedef (remove nil? x)))
         n-types     (count child-types)
@@ -294,60 +245,46 @@
       (= n-types 1)   (conj tdef (first child-types))
       :else           (conj tdef child-types))))
 
-;; BOOLEAN("boolean", true)
-;; BYTE("tinyint", true)
-;; SHORT("smallint", true)
-;; INT("int", true)
-;; LONG("bigint", true)
-;; FLOAT("float", true)
-;; DOUBLE("double", true)
-;; STRING("string", true)
-;; DATE("date", true)
-;; TIMESTAMP("timestamp", true)
-;; BINARY("binary", true)
-;; DECIMAL("decimal", true)
-;; VARCHAR("varchar", true)
-;; CHAR("char", true)
-;; LIST("array", false)
-;; MAP("map", false)
-;; STRUCT("struct", false)
-;; UNION("uniontype", false)
 (defn type-description
   "Creates an ORC TypeDescription"
   [[dtype opts]]
   (case dtype
-    ::boolean  (TypeDescription/createBoolean)
-    ::tinyint  (TypeDescription/createByte)
-    ::smallint (TypeDescription/createShort)
-    ::int      (TypeDescription/createInt)
-    ::bigint   (TypeDescription/createLong)
-    ::float    (TypeDescription/createFloat)
-    ::double   (TypeDescription/createDouble)
-    ::string   (TypeDescription/createString)
-    ;; ::date
-    ;; ::timestamp
+    ::boolean   (TypeDescription/createBoolean)
+    ::tinyint   (TypeDescription/createByte)
+    ::smallint  (TypeDescription/createShort)
+    ::int       (TypeDescription/createInt)
+    ::bigint    (TypeDescription/createLong)
+    ::float     (TypeDescription/createFloat)
+    ::double    (TypeDescription/createDouble)
+    ::string    (TypeDescription/createString)
+    ::date      (TypeDescription/createDate)
+    ::timestamp (TypeDescription/createTimestamp)
+
     ;; ::binary
-    ::decimal  (let [{:keys [scale precision]} opts]
-                 (cond-> (TypeDescription/createDecimal)
-                   (number? scale) (.withScale scale)
-                   (number? precision) (.withPrecision precision)))
+    ::decimal   (let [{:keys [scale precision]} opts]
+                  (cond-> (TypeDescription/createDecimal)
+                    (number? scale) (.withScale scale)
+                    (number? precision) (.withPrecision precision)))
     ;; ::varchar
     ;; ::char
-    ::array    (TypeDescription/createList (type-description opts))
-    ::map      (let [key-types (set (map typedef (keys opts)))
-                     ktype     (if (> (count key-types) 1)
-                                 (type-description [::union key-types])
-                                 (type-description (first key-types)))
-                     val-types (set (vals opts))
-                     vtype     (if (> (count val-types) 1)
-                                 (type-description [::union val-types])
-                                 (type-description (first val-types)))]
-                 (TypeDescription/createMap ktype vtype))
-    ;; ::struct
-    ::union    (let [utype (TypeDescription/createUnion)]
-                 (doseq [child opts]
-                   (.addUnionChild utype (type-description child)))
-                 utype)))
+    ::array     (TypeDescription/createList (type-description opts))
+    ::map       (let [key-types (set (map typedef (keys opts)))
+                      ktype     (if (> (count key-types) 1)
+                                  (type-description [::union key-types])
+                                  (type-description (first key-types)))
+                      val-types (set (vals opts))
+                      vtype     (if (> (count val-types) 1)
+                                  (type-description [::union val-types])
+                                  (type-description (first val-types)))]
+                  (TypeDescription/createMap ktype vtype))
+    ::struct    (let [struct (TypeDescription/createStruct)]
+                  (doseq [[k v] opts]
+                    (.addField struct (name k) (type-description v)))
+                  struct)
+    ::union     (let [utype (TypeDescription/createUnion)]
+                  (doseq [child opts]
+                    (.addUnionChild utype (type-description child)))
+                  utype)))
 
 (defn infer-typedesc [x]
   (str (type-description (typedef x))))
@@ -365,6 +302,7 @@
      x
      (match [x y]
        [[::union x-opts] [::union y-opts]]              (update x 1 set/union y-opts)
+       [[::struct x-opts] [::struct y-opts]]            (update x 1 #(merge-with merge-schema %1 y-opts))
        [[::array x-opts] [::array y-opts]]              [::array (merge-schema x-opts y-opts)]
        [[::union x-opts] [_ :guard #(not= % ::union)]]  (update x 1 conj y)
        [[_ :guard #(not= % ::union)] [::union _]]       (update y 1 conj x)
@@ -395,14 +333,26 @@
   (set-value! [col idx v]
     (.setVal col idx (to-bytes v))))
 
-(defn write-row! [row ^VectorizedRowBatch batch idx schema]
-  (doseq [[col v] (map vector (.cols batch) row)]
-    (set-value! col idx v)))
+(defprotocol RowWriter
+  (write-row! [row batch idx schema]))
 
-;; (defn write-rows [path row-seq]
-;;   (let [schema    (rows->schema row-seq)
-;;         type-desc (type-description schema)]
-;;     ))
+(extend-protocol RowWriter
+  clojure.lang.IPersistentMap
+  (write-row! [row ^VectorizedRowBatch batch idx ^TypeDescription schema]
+    (doseq [[^ColumnVector col field] (map vector (.cols batch) (.getFieldNames schema))]
+      (let [val (get row (keyword field))]
+        (if (nil? val)
+          (do (set! (.noNulls col) false)
+              (aset-boolean (.isNull col) idx true))
+          (set-value! col idx val)))))
+
+  clojure.lang.Sequential
+  (write-row! [row ^VectorizedRowBatch batch idx schema]
+    (doseq [[^ColumnVector col v] (map vector (.cols batch) row)]
+      (if (nil? v)
+        (do (set! (.noNulls col) false)
+            (aset-boolean (.isNull col) idx true))
+        (set-value! col idx v)))))
 
 (defn write-rows [path row-seq schema]
   (try
@@ -433,5 +383,14 @@
     (.delete tmp)
     path))
 
+(defn frame->vecs [frame]
+  (apply map vector (vals frame)))
+
+(defn frame->maps [frame]
+  (map zipmap (repeat (keys frame)) (frame->vecs frame)))
+
 (comment
+  (frame->vecs {:x [1 2] :y ["a" "b"]})
+  (frame->maps {:x [1 2] :y ["a" "b"]})
+
   )

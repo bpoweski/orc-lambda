@@ -1,7 +1,8 @@
 (ns orca.core-test
   (:require [clojure.test :refer :all]
             [clojure.java.io :as io]
-            [orca.core :as orca :refer :all])
+            [orca.core :as orca :refer :all]
+            [clj-time.core :as time])
   (:import [org.apache.hadoop.fs Path]))
 
 
@@ -14,11 +15,6 @@
     (is (= 1999.2M (:max stats)))
     (is (= -1000.5M (:min stats)))
     (is (= 1998301.099M (:sum stats)))))
-
-;; (deftest encoder-column-test
-;;   (testing "vector with longs"
-;;     (is (= [1 2 3] (decode-column (encode-column [1 2 3]))))
-;;     (is (= [1 nil 3] (decode-column (encode-column [1 nil 3]))))))
 
 (deftest type-inference-test
   (testing "BigDecimal"
@@ -48,7 +44,11 @@
     (is (= ::orca/string (data-type "foo"))))
   (testing "Char"
     (is (= ::orca/char (data-type \newline)))
-    (is (= ::orca/char (data-type (char-array [\f \o \o]))))))
+    (is (= ::orca/char (data-type (char-array [\f \o \o])))))
+  (testing "DateTime"
+    (is (= ::orca/timestamp (data-type (time/date-time 2017 4 3 10)))))
+  (testing "Date"
+    (is (= ::orca/date (data-type (time/local-date 2017 4 3))))))
 
 (deftest typedef-test
   (testing "Arrays"
@@ -58,14 +58,14 @@
     (is (= [::orca/string] (typedef "foo"))))
   (testing "Arrays of compound types"
     (is (= [::orca/array
-            #{[::orca/map {:a [::orca/tinyint]}]
-              [::orca/map
+            #{[::orca/struct {:a [::orca/tinyint]}]
+              [::orca/struct
                {:a [::orca/smallint],
                 :b [::orca/string]}]
-              [::orca/map {:a [::orca/smallint]}]}]
+              [::orca/struct {:a [::orca/smallint]}]}]
            (typedef [{:a 1} {:a 10000} {:a 10001 :b "foo"}]))))
   (testing "Map"
-    (is (= [::orca/map
+    (is (= [::orca/struct
             {:a    [::orca/tinyint]
              "foo" [::orca/string]
              10    [::orca/tinyint]}]
@@ -83,8 +83,14 @@
     (is (= "string" (infer-typedesc "hello"))))
   (testing "decimals"
     (is (= "decimal(2,1)" (infer-typedesc 1.0M))))
-  (testing "map"
-    (is (= "map<tinyint,string>" (infer-typedesc {10 "foo"})))))
+  ;; (testing "map"
+  ;;   (is (= "map<tinyint,string>" (infer-typedesc {10 "foo"}))))
+  (testing "struct"
+    (is (= "struct<k:string,y:boolean>" (infer-typedesc {:k "foo" :y true}))))
+  (testing "date"
+    (is (= "date" (infer-typedesc (time/local-date 2017 1 1)))))
+  (testing "timestamp"
+    (is (= "timestamp" (infer-typedesc (time/date-time 2017 1 1))))))
 
 (deftest merge-schema-test
   (testing "combining two different types yields a union"
@@ -95,7 +101,10 @@
            (merge-schema [::orca/union #{[::orca/string] [::orca/boolean]}] [::orca/union #{[::orca/boolean] [::orca/tinyint]}]))))
   (testing "union vs non-union primitive"
     (is (= [::orca/union #{[::orca/tinyint] [::orca/string]}]
-           (merge-schema [::orca/union #{[::orca/tinyint] [::orca/string]}] [::orca/string])))))
+           (merge-schema [::orca/union #{[::orca/tinyint] [::orca/string]}] [::orca/string]))))
+  (testing "merging two structs"
+    (is (= [::orca/struct {:x [::orca/tinyint] :y [::orca/boolean]}]
+           (merge-schema [::orca/struct {:x [::orca/tinyint]}] [::orca/struct {:y [::orca/boolean]}])))))
 
 (defn roundtrip [input schema]
   (let [tmp    (tmp-path)
@@ -107,10 +116,14 @@
 
 (deftest round-trip-test
   (testing "single vector"
-    (let [in  [[1] [2] [3]]
-          out (roundtrip in "struct<x:int>")]
-      (is (= {:x [1 2 3]} out))))
+    (let [in [[1] [2] [3]]]
+      (is (= in (frame->vecs (roundtrip in "struct<x:int>"))))))
   (testing "two vectors of different types"
-    (let [in  [[1 "a"] [2 "b"]]
-          out (roundtrip in "struct<x:int,y:string>")]
-      (is (= {:x [1 2] :y ["a" "b"]} out)))))
+    (let [in [[1 "a"] [2 "b"]]]
+      (is (= in (frame->vecs (roundtrip in "struct<x:int,y:string>"))))))
+  (testing "two vectors with nils"
+    (let [out (roundtrip [[nil "a"] [2 nil]] "struct<x:int,y:string>")]
+      (is (= {:x [nil 2] :y ["a" nil]} out))))
+  (testing "writing map into a struct"
+    (let [out (roundtrip [{:x "foo" :y 10} {:x "bar" :y 100000} {:z false}] "struct<x:string,y:int>")]
+      (is (= {:x ["foo" "bar" nil] :y [10 100000 nil]} out)))))
