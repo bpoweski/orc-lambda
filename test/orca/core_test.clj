@@ -1,7 +1,7 @@
 (ns orca.core-test
   (:require [clojure.test :refer :all]
             [clojure.java.io :as io]
-            [orca.core :as orca :refer :all])
+            [orca.core :as orc :refer :all])
   (:import [org.apache.hadoop.fs Path]
            [java.time Instant LocalDate]))
 
@@ -18,57 +18,57 @@
 
 (deftest type-inference-test
   (testing "BigDecimal"
-    (is (= ::orca/decimal (data-type 10.0M)))
+    (is (= ::orc/decimal (data-type 10.0M)))
     (is (= {:scale 1 :precision 3} (data-props 10.0M))))
   (testing "Boolean"
-    (is (= ::orca/boolean (data-type true)))
-    (is (= ::orca/boolean (data-type false))))
+    (is (= ::orc/boolean (data-type true)))
+    (is (= ::orc/boolean (data-type false))))
   (testing "Integer"
-    (is (= ::orca/tinyint (data-type 10)))
-    (is (= ::orca/tinyint (data-type 0)))
-    (is (= ::orca/smallint (data-type Short/MAX_VALUE)))
-    (is (= ::orca/smallint (data-type Short/MIN_VALUE)))
-    (is (= ::orca/int (data-type (inc Short/MAX_VALUE))))
-    (is (= ::orca/int (data-type (dec Short/MIN_VALUE))))
-    (is (= ::orca/bigint (data-type (inc Integer/MAX_VALUE))))
-    (is (= ::orca/bigint (data-type (dec Integer/MIN_VALUE)))))
+    (is (= ::orc/tinyint (data-type 10)))
+    (is (= ::orc/tinyint (data-type 0)))
+    (is (= ::orc/smallint (data-type Short/MAX_VALUE)))
+    (is (= ::orc/smallint (data-type Short/MIN_VALUE)))
+    (is (= ::orc/int (data-type (inc Short/MAX_VALUE))))
+    (is (= ::orc/int (data-type (dec Short/MIN_VALUE))))
+    (is (= ::orc/bigint (data-type (inc Integer/MAX_VALUE))))
+    (is (= ::orc/bigint (data-type (dec Integer/MIN_VALUE)))))
   (testing "Float"
-    (is (= ::orca/float (data-type (float -1.0))))
-    (is (= ::orca/float (data-type Float/MAX_VALUE)))
-    (is (= ::orca/float (data-type Float/MIN_VALUE))))
+    (is (= ::orc/float (data-type (float -1.0))))
+    (is (= ::orc/float (data-type Float/MAX_VALUE)))
+    (is (= ::orc/float (data-type Float/MIN_VALUE))))
   (testing "Double"
-    (is (= ::orca/double (data-type -1.0)))
-    (is (= ::orca/double (data-type 100.00))))
+    (is (= ::orc/double (data-type -1.0)))
+    (is (= ::orc/double (data-type 100.00))))
   (testing "String"
-    (is (= ::orca/string (data-type "")))
-    (is (= ::orca/string (data-type "foo"))))
+    (is (= ::orc/string (data-type "")))
+    (is (= ::orc/string (data-type "foo"))))
   (testing "Char"
-    (is (= ::orca/char (data-type \newline)))
-    (is (= ::orca/char (data-type (char-array [\f \o \o])))))
+    (is (= ::orc/char (data-type \newline)))
+    (is (= ::orc/char (data-type (char-array [\f \o \o])))))
   (testing "DateTime"
-    (is (= ::orca/timestamp (data-type (Instant/parse "2017-04-07T17:24:03.222Z")))))
+    (is (= ::orc/timestamp (data-type (Instant/parse "2017-04-07T17:24:03.222Z")))))
   (testing "Date"
-    (is (= ::orca/date (data-type (LocalDate/of 2017 4 3))))))
+    (is (= ::orc/date (data-type (LocalDate/of 2017 4 3))))))
 
 (deftest typedef-test
   (testing "Arrays"
-    (is (= [::orca/array [::orca/tinyint]] (typedef [1])))
-    (is (= [::orca/array [::orca/tinyint]] (typedef [1 -1])))
-    (is (= [::orca/array [::orca/tinyint]] (typedef [1 nil])))
-    (is (= [::orca/string] (typedef "foo"))))
+    (is (= [::orc/array [::orc/tinyint]] (typedef [1])))
+    (is (= [::orc/array [::orc/tinyint]] (typedef [1 -1])))
+    (is (= [::orc/array [::orc/tinyint]] (typedef [1 nil])))
+    (is (= [::orc/string] (typedef "foo"))))
   (testing "Arrays of compound types"
-    (is (= [::orca/array
-            #{[::orca/struct {:a [::orca/tinyint]}]
-              [::orca/struct
-               {:a [::orca/smallint],
-                :b [::orca/string]}]
-              [::orca/struct {:a [::orca/smallint]}]}]
+    (is (= [::orc/array
+            #{[::orc/struct {:a [::orc/tinyint]}]
+              [::orc/struct
+               {:a [::orc/smallint],
+                :b [::orc/string]}]
+              [::orc/struct {:a [::orc/smallint]}]}]
            (typedef [{:a 1} {:a 10000} {:a 10001 :b "foo"}]))))
   (testing "Map"
-    (is (= [::orca/struct
-            {:a    [::orca/tinyint]
-             "foo" [::orca/string]
-             10    [::orca/tinyint]}]
+    (is (= [::orc/struct
+            {:a    [::orc/tinyint]
+             "foo" [::orc/string]
+             10    [::orc/tinyint]}]
            (typedef {:a 1 "foo" "bar" 10 11})))))
 
 (deftest type-description-test
@@ -83,8 +83,6 @@
     (is (= "string" (infer-typedesc "hello"))))
   (testing "decimals"
     (is (= "decimal(2,1)" (infer-typedesc 1.0M))))
-  ;; (testing "map"
-  ;;   (is (= "map<tinyint,string>" (infer-typedesc {10 "foo"}))))
   (testing "struct"
     (is (= "struct<k:string,y:boolean>" (infer-typedesc {:k "foo" :y true}))))
   (testing "date"
@@ -94,17 +92,17 @@
 
 (deftest merge-schema-test
   (testing "combining two different types yields a union"
-    (is (= [::orca/array [::orca/union #{[::orca/tinyint] [::orca/int]}]]
+    (is (= [::orc/array [::orc/union #{[::orc/tinyint] [::orc/int]}]]
            (merge-schema (typedef [1]) (typedef [Integer/MAX_VALUE])))))
   (testing "two different untions"
-    (is (= [::orca/union #{[::orca/tinyint] [::orca/string] [::orca/boolean]}]
-           (merge-schema [::orca/union #{[::orca/string] [::orca/boolean]}] [::orca/union #{[::orca/boolean] [::orca/tinyint]}]))))
+    (is (= [::orc/union #{[::orc/tinyint] [::orc/string] [::orc/boolean]}]
+           (merge-schema [::orc/union #{[::orc/string] [::orc/boolean]}] [::orc/union #{[::orc/boolean] [::orc/tinyint]}]))))
   (testing "union vs non-union primitive"
-    (is (= [::orca/union #{[::orca/tinyint] [::orca/string]}]
-           (merge-schema [::orca/union #{[::orca/tinyint] [::orca/string]}] [::orca/string]))))
+    (is (= [::orc/union #{[::orc/tinyint] [::orc/string]}]
+           (merge-schema [::orc/union #{[::orc/tinyint] [::orc/string]}] [::orc/string]))))
   (testing "merging two structs"
-    (is (= [::orca/struct {:x [::orca/tinyint] :y [::orca/boolean]}]
-           (merge-schema [::orca/struct {:x [::orca/tinyint]}] [::orca/struct {:y [::orca/boolean]}])))))
+    (is (= [::orc/struct {:x [::orc/tinyint] :y [::orc/boolean]}]
+           (merge-schema [::orc/struct {:x [::orc/tinyint]}] [::orc/struct {:y [::orc/boolean]}])))))
 
 (defn roundtrip [input schema]
   (let [tmp    (tmp-path)

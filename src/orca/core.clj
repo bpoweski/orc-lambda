@@ -7,7 +7,7 @@
             [clojure.set :as set]
             [clojure.core.match :refer [match]]
             [cheshire.core :as json])
-  (:import [org.apache.hadoop.hive.ql.exec.vector VectorizedRowBatch ColumnVector LongColumnVector BytesColumnVector]
+  (:import [org.apache.hadoop.hive.ql.exec.vector VectorizedRowBatch ColumnVector DecimalColumnVector LongColumnVector BytesColumnVector TimestampColumnVector]
            [org.apache.orc OrcFile Reader Writer TypeDescription TypeDescription$Category]
            [org.apache.hadoop.conf Configuration]
            [org.apache.hadoop.fs Path]
@@ -35,55 +35,32 @@
   [path]
   (OrcFile/createReader (to-path path) (OrcFile/readerOptions (Configuration.))))
 
-(defprotocol ColumnVectorDecoder
-  (decode-column [col coll nrows]))
+(defprotocol ColumnVectorReader
+  (read-value [col coll nrows]))
 
-(extend-protocol ColumnVectorDecoder
-  org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector
-  (decode-column [arr schema nrows]
-    (loop [idx 0
-           result (transient [])]
-      (if (< idx nrows)
-        (let [^HiveDecimalWritable d (aget (.vector arr) idx)
-              result (conj! result (if (or (.noNulls arr) (not (aget (.isNull arr) idx)))
-                                     (.bigDecimalValue (.getHiveDecimal d))
-                                     nil))]
-          (recur (inc idx) result))
-        (persistent! result))))
+(defprotocol ColumnValueWriter
+  (write-value [col idx v]))
 
-  org.apache.hadoop.hive.ql.exec.vector.LongColumnVector
-  (decode-column [arr ^TypeDescription schema nrows]
-    (loop [idx 0
-           result (transient [])]
-      (if (< idx nrows)
-        (if (or (.noNulls arr) (not (aget (.isNull arr) idx)))
-          (let [elem (condp = (.getCategory schema)
-                       TypeDescription$Category/DATE (LocalDate/ofEpochDay (aget (.vector arr) idx))
-                       (aget (.vector arr) idx))]
-            (recur (inc idx) (conj! result elem)))
-          (recur (inc idx) (conj! result nil)))
-        (persistent! result))))
+(defprotocol ByteConversion
+  (to-bytes [x]))
 
-  org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector
-  (decode-column [arr schema nrows]
-    (loop [idx 0
-           result (transient [])]
-      (if (< idx nrows)
-        (let [result (conj! result (if (or (.noNulls arr) (not (aget (.isNull arr) idx)))
-                                     (String. ^"[B" (aget (.vector arr) idx) (aget (.start arr) idx) (aget (.length arr) idx) serialization-charset)
-                                     nil))]
-          (recur (inc idx) result))
-        (persistent! result))))
+(defprotocol RowWriter
+  (write-row! [row batch idx schema]))
 
-  org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector
-  (decode-column [arr schema nrows]
-    (loop [idx 0
-           result (transient [])]
-      (if (< idx nrows)
-        (if (or (.noNulls arr) (not (aget (.isNull arr) idx)))
-          (recur (inc idx) (conj! result (.plusNanos (Instant/ofEpochMilli (aget (.time arr) idx)) (.getNanos arr idx))))
-          (recur (inc idx) (conj! result nil)))
-        (persistent! result)))))
+(defprotocol LongConversion
+  (to-long [ld]))
+
+(defprotocol InstantConversion
+  (to-instant [ld]))
+
+(defn decode-column [^ColumnVector col schema nrows]
+  (loop [idx 0
+         result (transient [])]
+    (if (< idx nrows)
+      (if (or (.noNulls col) (not (aget (.isNull col) idx)))
+        (recur (inc idx) (conj! result (read-value col schema idx)))
+        (recur (inc idx) (conj! result nil)))
+      (persistent! result))))
 
 (defn read-batch [frame ^VectorizedRowBatch batch ^TypeDescription schema]
   (let [nrows (.size batch)]
@@ -328,21 +305,9 @@
        (map typedef)
        (reduce merge-schema)))
 
-(defprotocol ColumnValueWriter
-  (set-value! [col idx v]))
-
-(defprotocol ByteConversion
-  (to-bytes [x]))
-
 (extend-protocol ByteConversion
   java.lang.String
   (to-bytes [s] (.getBytes s serialization-charset)))
-
-(defprotocol LongConversion
-  (to-long [ld]))
-
-(defprotocol InstantConversion
-  (to-instant [ld]))
 
 (extend-protocol InstantConversion
   Instant
@@ -355,25 +320,44 @@
   LocalDate
   (to-long [x] (.toEpochDay x)))
 
-(extend-protocol ColumnValueWriter
-  LongColumnVector
-  (set-value! [col idx v]
-    (aset-long (.vector col) idx (to-long v)))
+(extend-type DecimalColumnVector
+  ColumnVectorReader
+  (read-value [arr schema idx]
+    (let [^HiveDecimalWritable d (aget (.vector arr) idx)]
+      (.bigDecimalValue (.getHiveDecimal d)))))
 
-  BytesColumnVector
-  (set-value! [col idx v]
-    (.setVal col idx (to-bytes v)))
+(extend-type LongColumnVector
+  ColumnVectorReader
+  (read-value [arr ^TypeDescription schema idx]
+    (condp = (.getCategory schema)
+      TypeDescription$Category/DATE (LocalDate/ofEpochDay (aget (.vector arr) idx))
+      (aget (.vector arr) idx)))
 
-  org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector
-  (set-value! [col idx v]
+  ColumnValueWriter
+  (write-value [col idx v]
+    (aset-long (.vector col) idx (to-long v))))
+
+(extend-type BytesColumnVector
+  ColumnVectorReader
+  (read-value [arr schema idx]
+    (String. ^"[B" (aget (.vector arr) idx) (aget (.start arr) idx) (aget (.length arr) idx) serialization-charset))
+
+  ColumnValueWriter
+  (write-value [col idx v]
+    (.setVal col idx (to-bytes v))))
+
+(extend-type TimestampColumnVector
+  ColumnVectorReader
+  (read-value [arr schema idx]
+    (.plusNanos (Instant/ofEpochMilli (aget (.time arr) idx)) (.getNanos arr idx)))
+
+  ColumnValueWriter
+  (write-value [col idx v]
     (.set col idx (java.sql.Timestamp/from ^Instant (to-instant v)))))
 
 (defn set-null! [^ColumnVector col ^long idx]
   (set! (.noNulls col) false)
   (aset-boolean (.isNull col) idx true))
-
-(defprotocol RowWriter
-  (write-row! [row batch idx schema]))
 
 (extend-protocol RowWriter
   clojure.lang.IPersistentMap
@@ -382,16 +366,22 @@
       (let [val (get row (keyword field))]
         (if (nil? val)
           (set-null! col idx)
-          (set-value! col idx val)))))
+          (write-value col idx val)))))
 
   clojure.lang.Sequential
   (write-row! [row ^VectorizedRowBatch batch idx schema]
     (doseq [[^ColumnVector col v] (map vector (.cols batch) row)]
       (if (nil? v)
         (set-null! col idx)
-        (set-value! col idx v)))))
+        (write-value col idx v)))))
 
-(defn write-rows [path row-seq schema & {:keys [overwrite?] :or {overwrite? false}}]
+(defn write-rows
+  "Write row-seq into an ORC file at path.
+
+  Options:
+
+  :overwrite?  - overwrites path if a file exists."
+  [path row-seq schema & {:keys [overwrite?] :or {overwrite? false}}]
   (try
     (when overwrite?
       (.delete (io/file path)))
@@ -427,9 +417,3 @@
 
 (defn frame->maps [frame]
   (map zipmap (repeat (keys frame)) (frame->vecs frame)))
-
-(comment
-  (frame->vecs {:x [1 2] :y ["a" "b"]})
-  (frame->maps {:x [1 2] :y ["a" "b"]})
-
-  )
