@@ -1,9 +1,9 @@
 (ns orca.core-test
   (:require [clojure.test :refer :all]
             [clojure.java.io :as io]
-            [orca.core :as orca :refer :all]
-            [clj-time.core :as time])
-  (:import [org.apache.hadoop.fs Path]))
+            [orca.core :as orca :refer :all])
+  (:import [org.apache.hadoop.fs Path]
+           [java.time Instant LocalDate]))
 
 
 (deftest path-test
@@ -46,9 +46,9 @@
     (is (= ::orca/char (data-type \newline)))
     (is (= ::orca/char (data-type (char-array [\f \o \o])))))
   (testing "DateTime"
-    (is (= ::orca/timestamp (data-type (time/date-time 2017 4 3 10)))))
+    (is (= ::orca/timestamp (data-type (Instant/parse "2017-04-07T17:24:03.222Z")))))
   (testing "Date"
-    (is (= ::orca/date (data-type (time/local-date 2017 4 3))))))
+    (is (= ::orca/date (data-type (LocalDate/of 2017 4 3))))))
 
 (deftest typedef-test
   (testing "Arrays"
@@ -88,9 +88,9 @@
   (testing "struct"
     (is (= "struct<k:string,y:boolean>" (infer-typedesc {:k "foo" :y true}))))
   (testing "date"
-    (is (= "date" (infer-typedesc (time/local-date 2017 1 1)))))
+    (is (= "date" (infer-typedesc (LocalDate/of 2017 1 1)))))
   (testing "timestamp"
-    (is (= "timestamp" (infer-typedesc (time/date-time 2017 1 1))))))
+    (is (= "timestamp" (infer-typedesc (Instant/now))))))
 
 (deftest merge-schema-test
   (testing "combining two different types yields a union"
@@ -126,4 +126,12 @@
       (is (= {:x [nil 2] :y ["a" nil]} out))))
   (testing "writing map into a struct"
     (let [out (roundtrip [{:x "foo" :y 10} {:x "bar" :y 100000} {:z false}] "struct<x:string,y:int>")]
-      (is (= {:x ["foo" "bar" nil] :y [10 100000 nil]} out)))))
+      (is (= {:x ["foo" "bar" nil] :y [10 100000 nil]} out))))
+  (testing "dates"
+    (let [in [[(LocalDate/of 2017 4 7)] [nil]]]
+      (is (= in (frame->vecs (roundtrip in "struct<y:date>"))))))
+  (testing "timestamp"
+    (let [in [[(Instant/parse "2017-04-07T17:13:19.581Z")] [nil]]]
+      (is (= in (frame->vecs (roundtrip in "struct<y:timestamp>")))))))
+
+;; [[nil (LocalDate/of 2017 4 7)] [(Instant/parse "2017-04-07T17:13:19.581Z") nil]]
