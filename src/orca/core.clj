@@ -7,7 +7,8 @@
             [clojure.set :as set]
             [clojure.core.match :refer [match]]
             [cheshire.core :as json])
-  (:import [org.apache.hadoop.hive.ql.exec.vector VectorizedRowBatch ColumnVector DecimalColumnVector LongColumnVector BytesColumnVector TimestampColumnVector]
+  (:import [org.apache.hadoop.hive.ql.exec.vector
+            VectorizedRowBatch ColumnVector DecimalColumnVector LongColumnVector BytesColumnVector TimestampColumnVector ListColumnVector]
            [org.apache.orc OrcFile Reader Writer TypeDescription TypeDescription$Category]
            [org.apache.hadoop.conf Configuration]
            [org.apache.hadoop.fs Path]
@@ -35,8 +36,8 @@
   [path]
   (OrcFile/createReader (to-path path) (OrcFile/readerOptions (Configuration.))))
 
-(defprotocol ColumnVectorReader
-  (read-value [col coll nrows]))
+(defprotocol ColumnValueReader
+  (read-value [col schema idx]))
 
 (defprotocol ColumnValueWriter
   (write-value [col idx v]))
@@ -73,7 +74,7 @@
           frame)))))
 
 (defn read-vectors
-  "Synchrounously reads rows from input."
+  "Synchrounously reads column vectors from input."
   [input]
   (let [reader        (file-reader (to-path input))
         schema        (.getSchema reader)
@@ -124,7 +125,11 @@
   (data-props [v] {:length 1})
 
   ;; date       LongColumnVector
-  LocalDate
+  java.time.LocalDate
+  (data-type [v] ::date)
+  (data-props [v])
+
+  org.joda.time.LocalDate
   (data-type [v] ::date)
   (data-props [v])
 
@@ -169,7 +174,11 @@
   ;; struct     StructColumnVector
 
   ;; timestamp  TimestampColumnVector
-  Instant
+  java.time.Instant
+  (data-type [v] ::timestamp)
+  (data-props [v])
+
+  org.joda.time.DateTime
   (data-type [v] ::timestamp)
   (data-props [v])
 
@@ -311,23 +320,32 @@
 
 (extend-protocol InstantConversion
   Instant
-  (to-instant [x] x))
+  (to-instant [x] x)
+
+  org.joda.time.ReadableInstant
+  (to-instant [x] (Instant/ofEpochMilli (.getMillis x))))
 
 (extend-protocol LongConversion
   Number
   (to-long [x] (long x))
 
   LocalDate
-  (to-long [x] (.toEpochDay x)))
+  (to-long [x] (.toEpochDay x))
+
+  org.joda.time.LocalDate
+  (to-long [x] (to-long (LocalDate/of (.getYear x) (.getMonthOfYear x) (.getDayOfMonth x))))
+
+  Boolean
+  (to-long [b] (case b true 1 false 0)))
 
 (extend-type DecimalColumnVector
-  ColumnVectorReader
+  ColumnValueReader
   (read-value [arr schema idx]
     (let [^HiveDecimalWritable d (aget (.vector arr) idx)]
       (.bigDecimalValue (.getHiveDecimal d)))))
 
 (extend-type LongColumnVector
-  ColumnVectorReader
+  ColumnValueReader
   (read-value [arr ^TypeDescription schema idx]
     (condp = (.getCategory schema)
       TypeDescription$Category/DATE (LocalDate/ofEpochDay (aget (.vector arr) idx))
@@ -338,7 +356,7 @@
     (aset-long (.vector col) idx (to-long v))))
 
 (extend-type BytesColumnVector
-  ColumnVectorReader
+  ColumnValueReader
   (read-value [arr schema idx]
     (String. ^"[B" (aget (.vector arr) idx) (aget (.start arr) idx) (aget (.length arr) idx) serialization-charset))
 
@@ -347,13 +365,35 @@
     (.setVal col idx (to-bytes v))))
 
 (extend-type TimestampColumnVector
-  ColumnVectorReader
+  ColumnValueReader
   (read-value [arr schema idx]
     (.plusNanos (Instant/ofEpochMilli (aget (.time arr) idx)) (.getNanos arr idx)))
 
   ColumnValueWriter
   (write-value [col idx v]
     (.set col idx (java.sql.Timestamp/from ^Instant (to-instant v)))))
+
+(extend-type ListColumnVector
+  ColumnValueReader
+  (read-value [col ^TypeDescription schema idx]
+    (let [offset       (aget (.offsets col) idx)
+          len          (aget (.lengths col) idx)
+          child-col    (.child col)
+          child-schema (first (.getChildren schema))]
+      (mapv #(read-value child-col child-schema %) (range offset (+ offset len)))))
+
+  ColumnValueWriter
+  (write-value [col idx v]
+    (let [child-col   (.child col)
+          child-count (.childCount col)
+          elems       (count v)
+          _           (aset-long (.offsets col) idx child-count)
+          _           (.ensureSize child-col (+ child-count elems) true)]
+      (doseq [elem v
+              :let [child-offset (.childCount col)]]
+        (write-value (.child col) child-offset elem)
+        (set! (.childCount col) (inc child-offset)))
+      (aset-long (.lengths col) idx elems))))
 
 (defn set-null! [^ColumnVector col ^long idx]
   (set! (.noNulls col) false)

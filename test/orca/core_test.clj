@@ -46,9 +46,11 @@
     (is (= ::orc/char (data-type \newline)))
     (is (= ::orc/char (data-type (char-array [\f \o \o])))))
   (testing "DateTime"
-    (is (= ::orc/timestamp (data-type (Instant/parse "2017-04-07T17:24:03.222Z")))))
+    (is (= ::orc/timestamp (data-type (Instant/parse "2017-04-07T17:24:03.222Z"))))
+    (is (= ::orc/timestamp (data-type (org.joda.time.DateTime/now)))))
   (testing "Date"
-    (is (= ::orc/date (data-type (LocalDate/of 2017 4 3))))))
+    (is (= ::orc/date (data-type (LocalDate/of 2017 4 3))))
+    (is (= ::orc/date (data-type (org.joda.time.LocalDate. 2017 1 2))))))
 
 (deftest typedef-test
   (testing "Arrays"
@@ -125,11 +127,28 @@
   (testing "writing map into a struct"
     (let [out (roundtrip [{:x "foo" :y 10} {:x "bar" :y 100000} {:z false}] "struct<x:string,y:int>")]
       (is (= {:x ["foo" "bar" nil] :y [10 100000 nil]} out))))
-  (testing "dates"
+  (testing "date"
     (let [in [[(LocalDate/of 2017 4 7)] [nil]]]
       (is (= in (frame->vecs (roundtrip in "struct<y:date>"))))))
   (testing "timestamp"
     (let [in [[(Instant/parse "2017-04-07T17:13:19.581Z")] [nil]]]
-      (is (= in (frame->vecs (roundtrip in "struct<y:timestamp>")))))))
+      (is (= in (frame->vecs (roundtrip in "struct<y:timestamp>"))))))
+  (testing "array"
+    (let [in [['()] [nil]]]
+      (is (= in (frame->vecs (roundtrip in "struct<y:array<string>>")))))
+    (let [in [['()] ['(1 2 3)]]]
+      (is (= in (frame->vecs (roundtrip in "struct<y:array<int>>")))))
+    (let [in [['((1 2 3))]]]
+      (is (= in (frame->vecs (roundtrip in "struct<y:array<array<int>>>")))))))
 
-;; [[nil (LocalDate/of 2017 4 7)] [(Instant/parse "2017-04-07T17:13:19.581Z") nil]]
+(deftest to-instance-test
+  (is (= (Instant/parse "2017-04-07T17:13:19.581Z") (to-instant (org.joda.time.DateTime/parse "2017-04-07T17:13:19.581Z")))))
+
+(deftest to-long-test
+  (testing "date"
+    (is (= 17168 (to-long (org.joda.time.LocalDate. 2017 1 2))))
+    (is (= 17168 (to-long (LocalDate/of 2017 1 2)))))
+  (testing "boolean"
+    (is (= 1 (to-long true)))
+    (is (= 0 (to-long false)))
+    (is (= 1 (to-long 1)))))

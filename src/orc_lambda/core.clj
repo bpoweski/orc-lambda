@@ -53,9 +53,15 @@
     "cache_control:string,check_in:date,rate_plan_code:string,session_token:string,timeout:tinyint,requested_at:timestamp,"
     "rinfo:array<array<tinyint>>,request_id:string>"]))
 
+(defn process-request [json]
+  (-> json
+      parse-request
+      flatten-request))
+
 (defn -main [& args]
   (doseq [file args]
     (println file)
     (with-open [in (snappy-input-stream file)]
-      (let [requests (map (comp flatten-request parse-request) (read-lines in))]
-        (cprint (orca/type-description (orca/rows->schema (take 1024 requests))))))))
+      (let [requests (map process-request (read-lines in))]
+        (cprint (orca/type-description (orca/rows->schema (take 1024 requests))))
+        (orca/write-rows "example.orc" requests schema :overwrite? true)))))
